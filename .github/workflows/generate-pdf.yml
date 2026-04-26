@@ -1,37 +1,38 @@
 name: Image to PDF Converter
-on:
-  push:
-    paths:
-      - 'assets/**' # Change this to the folder where your PNGs are stored
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
-  convert-images:
+  convert-to-pdf:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fix ImageMagick Security Policy
-        # Ubuntu runners disable PDF conversion by default for security. 
-        # This step re-enables it for the duration of the job.
+      - name: Install & Configure ImageMagick
         run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          
+          # FIX 1: Overwrite the security policy that blocks PDF writing
+          # This is the most common cause of "Operation not allowed" errors
           sudo sed -i 's/domain="coder" rights="none" pattern="PDF"/domain="coder" rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml
 
-      - name: Merge PNGs to PDF
+      - name: Execute Conversion
         run: |
-          # 'convert' or 'magick' can be used. 
-          # We use a wildcard to grab all PNGs in the directory.
-          # -gravity center: Centers the image on the PDF page
-          # -extent: Sets the page size (e.g., A4 is roughly 595x842 points)
-          assets/*.png \
-                  -gravity center \
+          # FIX 2: Use -limit to prevent memory/cache crashes with large emoji sets
+          # FIX 3: Use montage for tiled layouts (better for thousands of icons)
+          # Replace 'assets/*.png' with your actual path
+          montage -limit memory 2GiB -limit map 4GiB \
+                  "assets/*.png" \
+                  -tile 10x14 \
+                  -geometry 128x128+5+5 \
+                  -density 300 \
                   -background white \
-                  -page A4 \
-                  emoji-collection.pdf
+                  -label "%t" \
+                  joypixels-assets.pdf
 
-      - name: Upload PDF
+      - name: Upload Finished PDF
         uses: actions/upload-artifact@v4
         with:
-          name: converted-pdf
+          name: emoji-reference
           path: joypixels-assets.pdf
