@@ -1,43 +1,48 @@
-name: Convert Images to PDF
+name: Fix PDF Creation
 on:
   push:
     branches:
-      - main  # Triggers when you push to the main branch
-    paths:
-      - 'assets/**' # Only runs if images in this folder change
-  workflow_dispatch: # Allows you to run it manually for testing
+      - main
+  workflow_dispatch:
 
 jobs:
-  build:
+  fix-and-convert:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # IMPORTANT: Required to push the PDF back to the repo
+      contents: write
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare ImageMagick
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick
-          # Fix the PDF security policy
-          sudo sed -i 's/domain="coder" rights="none" pattern="PDF"/domain="coder" rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml
+          # We install ghostscript because ImageMagick uses it as the 'delegate' for PDF
+          sudo apt-get install -y imagemagick ghostscript
 
-      - name: Create PDF
+      - name: Force Enable PDF Policy
         run: |
-          # Use montage for efficient tiling of many small images
-          montage -limit memory 2GiB -limit map 4GiB \
+          # This command finds the specific line and changes "none" to "read|write"
+          # We use a broad search pattern to ensure it hits the right file
+          sudo find /etc/ImageMagick* -name "policy.xml" -exec sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/g' {} +
+
+      - name: Create PDF (Memory Optimized)
+        run: |
+          # 1. We use quotes around the glob to prevent shell expansion errors
+          # 2. We set a limit on disk and memory so the runner doesn't kill the process
+          # 3. We use -auto-orient in case any JoyPixels have EXIF rotation
+          montage -limit memory 1GiB -limit map 2GiB -limit disk 4GiB \
                   "assets/*.png" \
                   -tile 10x \
-                  -geometry +2+2 \
+                  -geometry 128x128+2+2 \
+                  -density 300 \
                   -background white \
-                  joypixels-assets.pdf
+                  emoji-assets.pdf
 
-      - name: Commit PDF to Main
+      - name: Upload or Commit
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add joypixels-assets.pdf
-          # Only commit if the file actually changed to avoid loop errors
-          git commit -m "Update emoji catalog PDF" || echo "No changes to commit"
+          git add emoji-assets.pdf
+          git commit -m "chore: update emoji pdf catalog" || echo "No changes"
           git push origin main
