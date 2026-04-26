@@ -26,17 +26,19 @@ jobs:
           # We use a broad search pattern to ensure it hits the right file
           sudo find /etc/ImageMagick* -name "policy.xml" -exec sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/g' {} +
 
-      - name: Create Multi-Image Grid PDF
+      - name: Create Managed PDF
         run: |
-          # We use 10x15 to fit 150 emojis per page.
-          # 3828 emojis / 150 per page = ~26 pages.
-          montage -limit memory 1GiB -limit map 2GiB -limit disk 4GiB \
+          # Removing the fixed row count (e.g., 1x15) but keeping columns.
+          # We use -page A4 to force ImageMagick to wrap the content 
+          # instead of creating 3,828 individual pages.
+          
+          montage -limit memory 1GiB -limit map 2GiB \
                   "assets/*.png" \
-                  -tile 1x1 \
-                  -geometry 128x128+2+2 \
+                  -tile 10x \
+                  -geometry 100x100+5+5 \
+                  -page A4 \
                   -background white \
-                  -units PixelsPerInch \
-                  -density 300 \
+                  -label "%t" \
                   emoji-assets.pdf
 
       - name: Upload or Commit
