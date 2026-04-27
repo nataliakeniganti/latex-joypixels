@@ -1,0 +1,184 @@
+name: Sync emoji qualification variants
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'assets/*.png'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-variants:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download emoji-test.txt
+        run: |
+          curl -sSL https://unicode.org/Public/emoji/16.0/emoji-test.txt \
+            -o emoji-test.txt
+
+      - name: Generate missing qualification variants
+        run: |
+          python3 - << 'EOF'
+          import re
+          import shutil
+          from pathlib import Path
+
+          ASSETS = Path("assets")
+          TEST   = Path("emoji-test.txt")
+
+          # ── 1. Parse emoji-test.txt ──────────────────────────────────────────
+          # Each non-comment line: "<hex codepoints> ; <status> # ..."
+          STATUSES = {"fully-qualified", "minimally-qualified", "unqualified"}
+          entries  = []   # list of (filename_stem, status, raw_codepoints)
+
+          for line in TEST.read_text(encoding="utf-8").splitlines():
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              m = re.match(r"^([0-9A-Fa-f ]+?)\s*;\s*(\S+(?:-\S+)?)", line)
+              if not m:
+                  continue
+              cps_raw, status = m.group(1).strip(), m.group(2)
+              if status not in STATUSES:
+                  continue
+              # filename: lowercase codepoints joined by hyphen
+              stem = "-".join(cp.lower() for cp in cps_raw.split())
+              entries.append((stem, status, cps_raw))
+
+          # ── 2. Existing assets (stems only, no extension) ────────────────────
+          existing = {p.stem for p in ASSETS.glob("*.png")}
+
+          # ── 3. Build a sibling map: for each stem find the best source PNG ───
+          # Group entries by their non-FE0F skeleton so FQ/MQ/UQ share a group.
+          def skeleton(stem: str) -> str:
+              """Remove all 'fe0f' segments — the bare codepoint sequence."""
+              return "-".join(p for p in stem.split("-") if p != "fe0f")
+
+          # skeleton → first existing stem that matches
+          skel_to_source: dict[str, str] = {}
+          for stem, _, _ in entries:
+              sk = skeleton(stem)
+              if stem in existing and sk not in skel_to_source:
+                  skel_to_source[sk] = stem
+
+          # ── 4. Copy missing files ────────────────────────────────────────────
+          copied  = []
+          missing = []   # no source found anywhere
+
+          for stem, status, cps_raw in entries:
+              if stem in existing:
+                  continue  # already there
+              sk  = skeleton(stem)
+              src = skel_to_source.get(sk)
+              if src:
+                  src_path = ASSETS / f"{src}.png"
+                  dst_path = ASSETS / f"{stem}.png"
+                  shutil.copy2(src_path, dst_path)
+                  copied.append((stem, status, src))
+                  print(f"  copied  {src}.png  →  {stem}.png  [{status}]")
+              else:
+                  missing.append((stem, status, cps_raw))
+
+          # ── 5. Report ────────────────────────────────────────────────────────
+          print(f"\n=== Summary ===")
+          print(f"  Total entries in emoji-test.txt : {len(entries)}")
+          print(f"  Already present                 : {len(existing)}")
+          print(f"  Copied (new variants)           : {len(copied)}")
+          print(f"  No source PNG found             : {len(missing)}")
+
+          if missing:
+              print("\n--- Missing source PNGs (no base asset to copy from) ---")
+              for stem, status, cps in missing:
+                  print(f"  {stem}  [{status}]  ({cps})")
+
+          # Write a machine-readable summary for later steps
+          summary_lines = [f"{stem}\t{status}" for stem, status, _ in copied]
+          Path("copied_variants.txt").write_text("\n".join(summary_lines))
+          Path("missing_sources.txt").write_text(
+              "\n".join(f"{stem}\t{status}\t{cps}" for stem, status, cps in missing)
+          )
+          EOF
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --quiet HEAD -- assets/ \
+            && echo "changed=false" >> "$GITHUB_OUTPUT" \
+            || echo "changed=true"  >> "$GITHUB_OUTPUT"
+
+      - name: Show copied count
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          COUNT=$(wc -l < copied_variants.txt | tr -d ' ')
+          echo "### Emoji variant sync" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Added **${COUNT}** missing qualification-variant PNGs." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| filename | status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          head -100 copied_variants.txt \
+            | awk -F'\t' '{print "| `" $1 ".png` | " $2 " |"}' \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ $(wc -l < copied_variants.txt) -gt 100 ]; then
+            echo "| … and more — see artifact | |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload summary artifacts
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emoji-sync-report
+          path: |
+            copied_variants.txt
+            missing_sources.txt
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: emoji-sync/qualification-variants
+          commit-message: |
+            assets: add fully-qualified, minimally-qualified, unqualified variants
+
+            Generated by sync-emoji-assets workflow against
+            unicode.org/Public/emoji/16.0/emoji-test.txt.
+          title: "assets: add emoji qualification variants (FQ / MQ / UQ)"
+          body: |
+            ## What
+
+            Adds missing PNG files for every **fully-qualified**,
+            **minimally-qualified**, and **unqualified** form listed in
+            [emoji-test.txt 16.0](https://unicode.org/Public/emoji/16.0/emoji-test.txt).
+
+            Variant files are copies of the nearest existing sibling asset —
+            same image, filename derived from the exact codepoint sequence
+            (lowercase hex joined by `-`, e.g. `0023-fe0f-20e3.png`).
+
+            ## Why
+
+            LaTeX packages that resolve emoji by codepoint sequence need an
+            asset file for each qualification level so that input text with or
+            without `U+FE0F` variation selectors still resolves correctly.
+
+            ## Files changed
+
+            See the **emoji-sync-report** artifact attached to the workflow run
+            for the full list of added filenames and any PNGs that had no source
+            to copy from.
+          labels: assets, automated
+          delete-branch: true
