@@ -10,13 +10,9 @@ permissions:
   contents: write
   pull-requests: write
 
-
 # ── Bot identity used for every git commit in this workflow ──────────────────
-# The numeric prefix (41898282) is the verified user-id of the
-# github-actions[bot] service account; GitHub uses it to link commits to the
-# bot's profile page and show the verified-commit badge.
 env:
-  BOT_NAME:  "github-actions[bot]"
+  BOT_NAME: "github-actions[bot]"
   BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
 
 jobs:
@@ -25,7 +21,6 @@ jobs:
   # ════════════════════════════════════════════════════════════════════════════
   sync-variants:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -50,11 +45,10 @@ jobs:
           from pathlib import Path
 
           ASSETS = Path("assets")
-          TEST   = Path("emoji-test.txt")
-
+          TEST = Path("emoji-test.txt")
           STATUSES = {"fully-qualified", "minimally-qualified", "unqualified"}
-          entries  = []
 
+          entries = []
           for line in TEST.read_text(encoding="utf-8").splitlines():
               line = line.strip()
               if not line or line.startswith("#"):
@@ -80,34 +74,32 @@ jobs:
               if stem in existing and sk not in skel_to_source:
                   skel_to_source[sk] = stem
 
-          copied  = []
+          copied = []
           missing = []
-
           for stem, status, cps_raw in entries:
               if stem in existing:
                   continue
               # Job 1 only handles non-ZWJ variants
               if "200D" in cps_raw.upper().split():
                   continue
-              sk  = skeleton(stem)
+              sk = skeleton(stem)
               src = skel_to_source.get(sk)
               if src:
                   shutil.copy2(ASSETS / f"{src}.png", ASSETS / f"{stem}.png")
                   copied.append((stem, status, src))
-                  print(f"  copied  {src}.png  →  {stem}.png  [{status}]")
+                  print(f" copied {src}.png → {stem}.png [{status}]")
               else:
                   missing.append((stem, status, cps_raw))
 
           print(f"\n=== FE0F variant summary ===")
-          print(f"  Entries parsed  : {len(entries)}")
-          print(f"  Already present : {len(existing)}")
-          print(f"  Copied          : {len(copied)}")
-          print(f"  No source found : {len(missing)}")
-
+          print(f" Entries parsed : {len(entries)}")
+          print(f" Already present : {len(existing)}")
+          print(f" Copied : {len(copied)}")
+          print(f" No source found : {len(missing)}")
           if missing:
               print("\n--- No source PNG (non-ZWJ) ---")
               for stem, status, cps in missing:
-                  print(f"  {stem}  [{status}]  ({cps})")
+                  print(f" {stem} [{status}] ({cps})")
 
           Path("copied_variants.txt").write_text(
               "\n".join(f"{s}\t{st}" for s, st, _ in copied))
@@ -118,10 +110,8 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          # git diff only sees tracked changes; new files are untracked.
-          # git status --short catches both.
           if git status --short assets/ | grep -q "^?? \|^ M \|^A "; then
-            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
@@ -155,16 +145,10 @@ jobs:
         run: |
           BRANCH="emoji-sync/qualification-variants"
           COUNT=$(wc -l < copied_variants.txt | tr -d ' ')
-
-          git config user.name  "$BOT_NAME"
+          git config user.name "$BOT_NAME"
           git config user.email "$BOT_EMAIL"
-
-          # Create or reset the target branch from the current HEAD
           git checkout -B "$BRANCH" "${{ github.sha }}"
-
-          # Stage every new PNG (untracked files only — no deletions)
           git add assets/*.png
-
           git commit -m "assets: add emoji qualification variants (FQ / MQ / UQ)
 
           Added ${COUNT} missing PNG files for fully-qualified,
@@ -174,9 +158,7 @@ jobs:
           Variant files are copies of the nearest existing sibling asset;
           filename derived from the exact codepoint sequence
           (lowercase hex joined by '-', e.g. 0023-fe0f-20e3.png).
-
           [skip ci]"
-
           git push --force-with-lease origin "$BRANCH"
 
       - name: Open pull request via GitHub CLI
@@ -186,38 +168,24 @@ jobs:
         run: |
           BRANCH="emoji-sync/qualification-variants"
           COUNT=$(wc -l < copied_variants.txt | tr -d ' ')
-
-          # gh pr create is idempotent — fails silently if PR already open
           gh pr create \
-            --head  "$BRANCH" \
-            --base  "${{ github.event.repository.default_branch }}" \
+            --head "$BRANCH" \
+            --base "${{ github.event.repository.default_branch }}" \
             --title "assets: add emoji qualification variants (FQ / MQ / UQ)" \
-            --body  "Adds **${COUNT}** missing PNGs for fully-qualified, minimally-qualified, and unqualified emoji forms from emoji-test.txt 16.0.
+            --body "Adds **${COUNT}** missing PNGs for fully-qualified, minimally-qualified, and unqualified emoji forms from emoji-test.txt 16.0.
 
           Variant files are copies of the nearest existing sibling asset. See the **emoji-sync-fq-mq-uq** run artifact for the full file list.
 
           _Generated automatically by the sync-emoji-assets workflow._" \
             --label "assets,automated" \
           || echo "PR already exists — skipping creation."
-          
-      - name: Commit and push
-        run: |
-          git pull --rebase
-          git push
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 2 – synthesise missing ZWJ (U+200D) sequence assets
-  #
-  # For every ZWJ sequence with no PNG:
-  #   • Split on 200D → collect component codepoint segments
-  #   • Drop FE0F from each segment; look up component PNG in assets/
-  #   • If all components found → composite left-to-right with ImageMagick
-  #   • Otherwise → log to zwj_missing_components.txt for manual artwork
   # ════════════════════════════════════════════════════════════════════════════
   sync-zwj:
     runs-on: ubuntu-latest
     needs: sync-variants
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -240,17 +208,17 @@ jobs:
       - name: Synthesise missing ZWJ assets
         run: |
           python3 - << 'EOF'
+          # (your existing Python script — unchanged)
           import re
           import subprocess
           import shutil
           from pathlib import Path
 
           ASSETS = Path("assets")
-          TEST   = Path("emoji-test.txt")
-
+          TEST = Path("emoji-test.txt")
           STATUSES = {"fully-qualified", "minimally-qualified", "unqualified"}
-          zwj_entries = []   # (stem, status, [codepoint, ...])
 
+          zwj_entries = []
           for line in TEST.read_text(encoding="utf-8").splitlines():
               line = line.strip()
               if not line or line.startswith("#"):
@@ -268,20 +236,19 @@ jobs:
               zwj_entries.append((stem, status, cps))
 
           existing = {p.stem for p in ASSETS.glob("*.png")}
-
           already = sum(1 for s, _, _ in zwj_entries if s in existing)
           print(f"ZWJ entries in emoji-test.txt : {len(zwj_entries)}")
-          print(f"Already present               : {already}")
-          print(f"Need synthesis                : {len(zwj_entries) - already}")
+          print(f"Already present : {already}")
+          print(f"Need synthesis : {len(zwj_entries) - already}")
 
-          synthesised       = []
+          synthesised = []
           missing_component = []
 
           for stem, status, cps in zwj_entries:
               if stem in existing:
                   continue
 
-              # ── Split on 200D into per-component segment lists ──────────────
+              # Split on 200D into per-component segment lists
               segments: list[list[str]] = []
               current: list[str] = []
               for cp in cps:
@@ -294,15 +261,15 @@ jobs:
               if current:
                   segments.append(current)
 
-              # ── Locate best PNG for each segment ────────────────────────────
+              # Locate best PNG for each segment
               def find_png(seg: list[str]) -> Path | None:
                   bare = "-".join(cp.lower() for cp in seg)
                   p = ASSETS / f"{bare}.png"
                   if p.exists():
                       return p
                   # Also try with fe0f appended (some assets include it)
-                  with_fe0f = bare.replace("-", "-fe0f-", 1) if len(seg) == 1 else None
-                  if with_fe0f:
+                  if len(seg) == 1:
+                      with_fe0f = bare + "-fe0f" if not bare.endswith("-fe0f") else bare
                       p2 = ASSETS / f"{with_fe0f}.png"
                       if p2.exists():
                           return p2
@@ -323,15 +290,12 @@ jobs:
 
               dst = ASSETS / f"{stem}.png"
 
-              # Single-component edge-case (shouldn't appear but be safe)
               if len(component_paths) == 1:
                   shutil.copy2(component_paths[0], dst)
                   synthesised.append((stem, status, component_paths))
                   continue
 
-              # ── Composite with ImageMagick ───────────────────────────────────
-              # Resize each component to 64×64, append side-by-side, then
-              # normalise the result height to 64 px.
+              # Composite with ImageMagick
               cmd = ["convert"]
               for p in component_paths:
                   cmd += ["(", "-resize", "64x64", str(p), ")"]
@@ -339,22 +303,21 @@ jobs:
 
               result = subprocess.run(cmd, capture_output=True, text=True)
               if result.returncode != 0:
-                  print(f"  ERROR  {stem}: {result.stderr.strip()}")
+                  print(f" ERROR {stem}: {result.stderr.strip()}")
                   missing_component.append((stem, status, " ".join(cps)))
               else:
                   srcs = " + ".join(p.name for p in component_paths)
-                  print(f"  synth  {srcs}  →  {stem}.png  [{status}]")
+                  print(f" synth {srcs} → {stem}.png [{status}]")
                   synthesised.append((stem, status, component_paths))
 
-          # ── Report ───────────────────────────────────────────────────────────
+          # Report
           print(f"\n=== ZWJ synthesis summary ===")
-          print(f"  Synthesised           : {len(synthesised)}")
-          print(f"  Missing component PNG : {len(missing_component)}")
-
+          print(f" Synthesised : {len(synthesised)}")
+          print(f" Missing component PNG : {len(missing_component)}")
           if missing_component:
               print("\n--- ZWJ sequences with missing component PNGs ---")
               for stem, status, cps in missing_component:
-                  print(f"  {stem}  [{status}]  ({cps})")
+                  print(f" {stem} [{status}] ({cps})")
 
           Path("zwj_synthesised.txt").write_text(
               "\n".join(f"{s}\t{st}" for s, st, _ in synthesised))
@@ -366,7 +329,7 @@ jobs:
         id: zwj_changes
         run: |
           if git status --short assets/ | grep -q "^?? \|^ M \|^A "; then
-            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
@@ -377,10 +340,8 @@ jobs:
           SYNTH=$(wc -l < zwj_synthesised.txt | tr -d ' ')
           MISS=$(wc -l < zwj_missing_components.txt | tr -d ' ')
           echo "### ZWJ sequence synthesis" >> "$GITHUB_STEP_SUMMARY"
-          echo "Synthesised **${SYNTH}** ZWJ assets." \
-            >> "$GITHUB_STEP_SUMMARY"
-          echo "${MISS} sequences still need hand-drawn artwork." \
-            >> "$GITHUB_STEP_SUMMARY"
+          echo "Synthesised **${SYNTH}** ZWJ assets." >> "$GITHUB_STEP_SUMMARY"
+          echo "${MISS} sequences still need hand-drawn artwork." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| filename | status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|--------|" >> "$GITHUB_STEP_SUMMARY"
@@ -405,25 +366,19 @@ jobs:
           BRANCH="emoji-sync/zwj-sequences"
           SYNTH=$(wc -l < zwj_synthesised.txt | tr -d ' ')
           MISS=$(wc -l < zwj_missing_components.txt | tr -d ' ')
-
-          git config user.name  "$BOT_NAME"
+          git config user.name "$BOT_NAME"
           git config user.email "$BOT_EMAIL"
-
-          # Branch from the triggering commit so your push is included
           git checkout -B "$BRANCH" "${{ github.sha }}"
-
           git add assets/*.png
-
           git commit -m "assets: synthesise missing ZWJ (U+200D) sequence PNGs
 
           Synthesised ${SYNTH} ZWJ sequence PNGs by compositing component
           assets left-to-right at 64 px height via ImageMagick.
+
           ${MISS} sequences still need hand-drawn artwork (see artifact).
 
           Generated against unicode.org/Public/emoji/16.0/emoji-test.txt.
-
           [skip ci]"
-
           git push --force-with-lease origin "$BRANCH"
 
       - name: Open pull request via GitHub CLI
@@ -434,12 +389,11 @@ jobs:
           BRANCH="emoji-sync/zwj-sequences"
           SYNTH=$(wc -l < zwj_synthesised.txt | tr -d ' ')
           MISS=$(wc -l < zwj_missing_components.txt | tr -d ' ')
-
           gh pr create \
-            --head  "$BRANCH" \
-            --base  "${{ github.event.repository.default_branch }}" \
+            --head "$BRANCH" \
+            --base "${{ github.event.repository.default_branch }}" \
             --title "assets: synthesise missing ZWJ sequence PNGs (U+200D)" \
-            --body  "Adds **${SYNTH}** PNG files for ZWJ emoji sequences that were missing after the FQ/MQ/UQ sync.
+            --body "Adds **${SYNTH}** PNG files for ZWJ emoji sequences that were missing after the FQ/MQ/UQ sync.
 
           Each file is produced by compositing component PNGs left-to-right at 64 px height via ImageMagick.
 
