@@ -11,6 +11,9 @@ permissions:
   pull-requests: write
 
 jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 1 – copy FQ / MQ / UQ variants (FE0F differences only, no new glyphs)
+  # ════════════════════════════════════════════════════════════════════════════
   sync-variants:
     runs-on: ubuntu-latest
 
@@ -40,10 +43,8 @@ jobs:
           ASSETS = Path("assets")
           TEST   = Path("emoji-test.txt")
 
-          # ── 1. Parse emoji-test.txt ──────────────────────────────────────────
-          # Each non-comment line: "<hex codepoints> ; <status> # ..."
           STATUSES = {"fully-qualified", "minimally-qualified", "unqualified"}
-          entries  = []   # list of (filename_stem, status, raw_codepoints)
+          entries  = []
 
           for line in TEST.read_text(encoding="utf-8").splitlines():
               line = line.strip()
@@ -55,62 +56,54 @@ jobs:
               cps_raw, status = m.group(1).strip(), m.group(2)
               if status not in STATUSES:
                   continue
-              # filename: lowercase codepoints joined by hyphen
               stem = "-".join(cp.lower() for cp in cps_raw.split())
               entries.append((stem, status, cps_raw))
 
-          # ── 2. Existing assets (stems only, no extension) ────────────────────
           existing = {p.stem for p in ASSETS.glob("*.png")}
 
-          # ── 3. Build a sibling map: for each stem find the best source PNG ───
-          # Group entries by their non-FE0F skeleton so FQ/MQ/UQ share a group.
           def skeleton(stem: str) -> str:
-              """Remove all 'fe0f' segments — the bare codepoint sequence."""
+              """Strip fe0f — bare codepoints, keeping 200d structure."""
               return "-".join(p for p in stem.split("-") if p != "fe0f")
 
-          # skeleton → first existing stem that matches
           skel_to_source: dict[str, str] = {}
           for stem, _, _ in entries:
               sk = skeleton(stem)
               if stem in existing and sk not in skel_to_source:
                   skel_to_source[sk] = stem
 
-          # ── 4. Copy missing files ────────────────────────────────────────────
           copied  = []
-          missing = []   # no source found anywhere
+          missing = []
 
           for stem, status, cps_raw in entries:
               if stem in existing:
-                  continue  # already there
+                  continue
+              # Job 1 only handles non-ZWJ variants
+              if "200D" in cps_raw.upper().split():
+                  continue
               sk  = skeleton(stem)
               src = skel_to_source.get(sk)
               if src:
-                  src_path = ASSETS / f"{src}.png"
-                  dst_path = ASSETS / f"{stem}.png"
-                  shutil.copy2(src_path, dst_path)
+                  shutil.copy2(ASSETS / f"{src}.png", ASSETS / f"{stem}.png")
                   copied.append((stem, status, src))
                   print(f"  copied  {src}.png  →  {stem}.png  [{status}]")
               else:
                   missing.append((stem, status, cps_raw))
 
-          # ── 5. Report ────────────────────────────────────────────────────────
-          print(f"\n=== Summary ===")
-          print(f"  Total entries in emoji-test.txt : {len(entries)}")
-          print(f"  Already present                 : {len(existing)}")
-          print(f"  Copied (new variants)           : {len(copied)}")
-          print(f"  No source PNG found             : {len(missing)}")
+          print(f"\n=== FE0F variant summary ===")
+          print(f"  Entries parsed  : {len(entries)}")
+          print(f"  Already present : {len(existing)}")
+          print(f"  Copied          : {len(copied)}")
+          print(f"  No source found : {len(missing)}")
 
           if missing:
-              print("\n--- Missing source PNGs (no base asset to copy from) ---")
+              print("\n--- No source PNG (non-ZWJ) ---")
               for stem, status, cps in missing:
                   print(f"  {stem}  [{status}]  ({cps})")
 
-          # Write a machine-readable summary for later steps
-          summary_lines = [f"{stem}\t{status}" for stem, status, _ in copied]
-          Path("copied_variants.txt").write_text("\n".join(summary_lines))
+          Path("copied_variants.txt").write_text(
+              "\n".join(f"{s}\t{st}" for s, st, _ in copied))
           Path("missing_sources.txt").write_text(
-              "\n".join(f"{stem}\t{status}\t{cps}" for stem, status, cps in missing)
-          )
+              "\n".join(f"{s}\t{st}\t{c}" for s, st, c in missing))
           EOF
 
       - name: Check for changes
@@ -120,28 +113,26 @@ jobs:
             && echo "changed=false" >> "$GITHUB_OUTPUT" \
             || echo "changed=true"  >> "$GITHUB_OUTPUT"
 
-      - name: Show copied count
+      - name: Write step summary
         if: steps.changes.outputs.changed == 'true'
         run: |
           COUNT=$(wc -l < copied_variants.txt | tr -d ' ')
-          echo "### Emoji variant sync" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Added **${COUNT}** missing qualification-variant PNGs." >> "$GITHUB_STEP_SUMMARY"
+          echo "### FE0F variant sync" >> "$GITHUB_STEP_SUMMARY"
+          echo "Added **${COUNT}** qualification-variant PNGs." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| filename | status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|--------|" >> "$GITHUB_STEP_SUMMARY"
           head -100 copied_variants.txt \
             | awk -F'\t' '{print "| `" $1 ".png` | " $2 " |"}' \
             >> "$GITHUB_STEP_SUMMARY"
-          if [ $(wc -l < copied_variants.txt) -gt 100 ]; then
-            echo "| … and more — see artifact | |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          [ $(wc -l < copied_variants.txt) -gt 100 ] \
+            && echo "| … see artifact | |" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload summary artifacts
+      - name: Upload report artifacts
         if: steps.changes.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: emoji-sync-report
+          name: emoji-sync-fq-mq-uq
           path: |
             copied_variants.txt
             missing_sources.txt
@@ -177,8 +168,233 @@ jobs:
 
             ## Files changed
 
-            See the **emoji-sync-report** artifact attached to the workflow run
-            for the full list of added filenames and any PNGs that had no source
-            to copy from.
+            See the **emoji-sync-fq-mq-uq** artifact for the full list.
           labels: assets, automated
+          delete-branch: true
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # JOB 2 – synthesise missing ZWJ (U+200D) sequence assets
+  #
+  # For every ZWJ sequence with no PNG:
+  #   • Split on 200D → collect component codepoint segments
+  #   • Drop FE0F from each segment; look up component PNG in assets/
+  #   • If all components found → composite left-to-right with ImageMagick
+  #   • Otherwise → log to zwj_missing_components.txt for manual artwork
+  # ════════════════════════════════════════════════════════════════════════════
+  sync-zwj:
+    runs-on: ubuntu-latest
+    needs: sync-variants
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ImageMagick
+        run: sudo apt-get install -y imagemagick
+
+      - name: Download emoji-test.txt
+        run: |
+          curl -sSL https://unicode.org/Public/emoji/16.0/emoji-test.txt \
+            -o emoji-test.txt
+
+      - name: Synthesise missing ZWJ assets
+        run: |
+          python3 - << 'EOF'
+          import re
+          import subprocess
+          import shutil
+          from pathlib import Path
+
+          ASSETS = Path("assets")
+          TEST   = Path("emoji-test.txt")
+
+          STATUSES = {"fully-qualified", "minimally-qualified", "unqualified"}
+          zwj_entries = []   # (stem, status, [codepoint, ...])
+
+          for line in TEST.read_text(encoding="utf-8").splitlines():
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              m = re.match(r"^([0-9A-Fa-f ]+?)\s*;\s*(\S+(?:-\S+)?)", line)
+              if not m:
+                  continue
+              cps_raw, status = m.group(1).strip(), m.group(2)
+              if status not in STATUSES:
+                  continue
+              cps = cps_raw.upper().split()
+              if "200D" not in cps:
+                  continue
+              stem = "-".join(cp.lower() for cp in cps)
+              zwj_entries.append((stem, status, cps))
+
+          existing = {p.stem for p in ASSETS.glob("*.png")}
+
+          already = sum(1 for s, _, _ in zwj_entries if s in existing)
+          print(f"ZWJ entries in emoji-test.txt : {len(zwj_entries)}")
+          print(f"Already present               : {already}")
+          print(f"Need synthesis                : {len(zwj_entries) - already}")
+
+          synthesised       = []
+          missing_component = []
+
+          for stem, status, cps in zwj_entries:
+              if stem in existing:
+                  continue
+
+              # ── Split on 200D into per-component segment lists ──────────────
+              segments: list[list[str]] = []
+              current: list[str] = []
+              for cp in cps:
+                  if cp == "200D":
+                      if current:
+                          segments.append(current)
+                      current = []
+                  elif cp != "FE0F":
+                      current.append(cp)
+              if current:
+                  segments.append(current)
+
+              # ── Locate best PNG for each segment ────────────────────────────
+              def find_png(seg: list[str]) -> Path | None:
+                  bare = "-".join(cp.lower() for cp in seg)
+                  p = ASSETS / f"{bare}.png"
+                  if p.exists():
+                      return p
+                  # Also try with fe0f appended (some assets include it)
+                  with_fe0f = bare.replace("-", "-fe0f-", 1) if len(seg) == 1 else None
+                  if with_fe0f:
+                      p2 = ASSETS / f"{with_fe0f}.png"
+                      if p2.exists():
+                          return p2
+                  return None
+
+              component_paths: list[Path] = []
+              all_found = True
+              for seg in segments:
+                  p = find_png(seg)
+                  if p is None:
+                      all_found = False
+                      break
+                  component_paths.append(p)
+
+              if not all_found:
+                  missing_component.append((stem, status, " ".join(cps)))
+                  continue
+
+              dst = ASSETS / f"{stem}.png"
+
+              # Single-component edge-case (shouldn't appear but be safe)
+              if len(component_paths) == 1:
+                  shutil.copy2(component_paths[0], dst)
+                  synthesised.append((stem, status, component_paths))
+                  continue
+
+              # ── Composite with ImageMagick ───────────────────────────────────
+              # Resize each component to 64×64, append side-by-side, then
+              # normalise the result height to 64 px.
+              cmd = ["convert"]
+              for p in component_paths:
+                  cmd += ["(", "-resize", "64x64", str(p), ")"]
+              cmd += ["+append", "-resize", "x64", str(dst)]
+
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              if result.returncode != 0:
+                  print(f"  ERROR  {stem}: {result.stderr.strip()}")
+                  missing_component.append((stem, status, " ".join(cps)))
+              else:
+                  srcs = " + ".join(p.name for p in component_paths)
+                  print(f"  synth  {srcs}  →  {stem}.png  [{status}]")
+                  synthesised.append((stem, status, component_paths))
+
+          # ── Report ───────────────────────────────────────────────────────────
+          print(f"\n=== ZWJ synthesis summary ===")
+          print(f"  Synthesised           : {len(synthesised)}")
+          print(f"  Missing component PNG : {len(missing_component)}")
+
+          if missing_component:
+              print("\n--- ZWJ sequences with missing component PNGs ---")
+              for stem, status, cps in missing_component:
+                  print(f"  {stem}  [{status}]  ({cps})")
+
+          Path("zwj_synthesised.txt").write_text(
+              "\n".join(f"{s}\t{st}" for s, st, _ in synthesised))
+          Path("zwj_missing_components.txt").write_text(
+              "\n".join(f"{s}\t{st}\t{c}" for s, st, c in missing_component))
+          EOF
+
+      - name: Check for changes
+        id: zwj_changes
+        run: |
+          git diff --quiet HEAD -- assets/ \
+            && echo "changed=false" >> "$GITHUB_OUTPUT" \
+            || echo "changed=true"  >> "$GITHUB_OUTPUT"
+
+      - name: Write step summary
+        if: steps.zwj_changes.outputs.changed == 'true'
+        run: |
+          SYNTH=$(wc -l < zwj_synthesised.txt | tr -d ' ')
+          MISS=$(wc -l < zwj_missing_components.txt | tr -d ' ')
+          echo "### ZWJ sequence synthesis" >> "$GITHUB_STEP_SUMMARY"
+          echo "Synthesised **${SYNTH}** ZWJ assets." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "${MISS} sequences still need hand-drawn artwork." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| filename | status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          head -100 zwj_synthesised.txt \
+            | awk -F'\t' '{print "| `" $1 ".png` | " $2 " |"}' \
+            >> "$GITHUB_STEP_SUMMARY"
+          [ $(wc -l < zwj_synthesised.txt) -gt 100 ] \
+            && echo "| … see artifact | |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ZWJ report artifacts
+        if: steps.zwj_changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emoji-sync-zwj
+          path: |
+            zwj_synthesised.txt
+            zwj_missing_components.txt
+
+      - name: Create pull request
+        if: steps.zwj_changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: emoji-sync/zwj-sequences
+          commit-message: |
+            assets: synthesise missing ZWJ (U+200D) sequence PNGs
+
+            Components composited left-to-right at 64 px height via ImageMagick.
+            Generated against unicode.org/Public/emoji/16.0/emoji-test.txt.
+          title: "assets: synthesise missing ZWJ sequence PNGs (U+200D)"
+          body: |
+            ## What
+
+            Adds PNG files for ZWJ emoji sequences (`U+200D`) that were missing
+            from `assets/` after the FQ/MQ/UQ sync.
+
+            Each new file is produced by compositing its component PNGs
+            left-to-right with ImageMagick (`convert … +append -resize x64`).
+            The filename is the full lowercase codepoint sequence joined by `-`,
+            including `200d` (e.g. `1f469-200d-1f4bb.png`).
+
+            ## Sequences that could not be synthesised
+
+            Any ZWJ sequence whose component PNGs were also absent is listed in
+            the **emoji-sync-zwj** artifact (`zwj_missing_components.txt`).
+            Those need hand-drawn artwork.
+
+            ## Files changed
+
+            See the **emoji-sync-zwj** artifact for the full list.
+          labels: assets, automated, zwj
           delete-branch: true

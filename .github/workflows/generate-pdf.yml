@@ -1,13 +1,12 @@
-name: Generate JoyPixels Sty and Assets
+name: Fix PDF Creation
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'assets/*.png'
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  build-sty:
+  fix-and-convert:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,55 +14,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate JoyPixels Sty from Unicode 16.0
+      - name: Install Dependencies
         run: |
-          # 1. Download official Unicode 16.0 test data
-          curl -O https://unicode.org/Public/emoji/16.0/emoji-test.txt
+          sudo apt-get update
+          # We install ghostscript because ImageMagick uses it as the 'delegate' for PDF
+          sudo apt-get install -y imagemagick ghostscript
 
-          # 2. Python Script to parse and map with explicit Newlines (\n)
-          python3 -c "
-          import re
-
-          header = r'''\NeedsTeXFormat{LaTeX2e}
-          \ProvidesPackage{joypixels}[2026/04/26 JoyPixels Emoji Support]
-          \RequirePackage{graphicx}
-          \RequirePackage{newunicodechar}
-
-          \newcommand{\joypixels@emoji}[1]{%
-            \includegraphics[height=1em]{assets/#1.png}%
-          }
-          '''
-
-          with open('joypixels.sty', 'w') as sty, open('emoji-test.txt', 'r') as data:
-              sty.write(header + '\n\n') # Added double newline after header
-              
-              for line in data:
-                  # Only process fully-qualified emojis to avoid duplicates
-                  if '; fully-qualified' in line:
-                      # Parse the line
-                      parts = line.split('#')
-                      # Clean hex codes (e.g., 1F600) to match filename 1f600.png
-                      hex_codes = parts[0].split(';')[0].strip().replace(' ', '-').lower()
-                      # Get the actual character (the first item after the #)
-                      emoji_char = parts[1].strip().split(' ')[0]
-                      
-                      # Write the command with an EXPLICIT newline \n at the end
-                      line_to_write = f'\\newunicodechar{{{emoji_char}}}{{\\joypixels@emoji{{{hex_codes}}}}}'
-                      sty.write(line_to_write + '\n')
-          "
-
-      - name: Create Reference PDF
+      - name: Force Enable PDF Policy
         run: |
-          # Create a PDF with one emoji per page (hwemoji style)
-          sudo apt-get update && sudo apt-get install -y imagemagick ghostscript
+          # This command finds the specific line and changes "none" to "read|write"
+          # We use a broad search pattern to ensure it hits the right file
           sudo find /etc/ImageMagick* -name "policy.xml" -exec sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/g' {} +
-          
-          convert -limit memory 1GiB "assets/*.png" -gravity center -background white emoji-assets.pdf
 
-      - name: Commit Files
+      - name: Create hwemoji Style PDF
+        run: |
+          # 1. We switch to 'convert' to avoid the 'montage' grid limits
+          # 2. We use -gravity center to keep the emoji centered
+          # 3. We use -units and -density to ensure consistent scaling
+          
+          convert -limit memory 1GiB -limit map 2GiB \
+                  "assets/*.png" \
+                  -gravity center \
+                  -background white \
+                  -units PixelsPerInch \
+                  -density 300 \
+                  emoji-assets.pdf
+
+      - name: Upload or Commit
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add joypixels.sty emoji-assets.pdf
-          git commit -m "chore: update joypixels.sty and reference pdf [skip ci]" || exit 0
+          git add emoji-assets.pdf
+          git commit -m "chore: update emoji pdf catalog" || echo "No changes"
           git push origin main
