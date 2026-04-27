@@ -199,6 +199,11 @@ jobs:
           _Generated automatically by the sync-emoji-assets workflow._" \
             --label "assets,automated" \
           || echo "PR already exists — skipping creation."
+          
+      - name: Commit and push
+        run: |
+          git pull --rebase
+          git push
 
   # ════════════════════════════════════════════════════════════════════════════
   # JOB 2 – synthesise missing ZWJ (U+200D) sequence assets
